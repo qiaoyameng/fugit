@@ -1794,6 +1794,145 @@ group Fugit::Cron do
     end
   end
 
+  group '.compare_within' do
+
+    before { @previous_tz = ENV['TZ']; ENV['TZ'] = 'UTC' }
+    after { ENV['TZ'] = @previous_tz }
+
+    test 'accepts different syntax for the same occurrence sequence' do
+
+      r =
+        Fugit::Cron.compare_within(
+          '0 0 * * mon-sun',
+          '0 0 * * *',
+          Time.parse('2024-01-01')..Time.parse('2024-02-01'))
+
+      assert(r, true)
+    end
+
+    test 'honours weekday/monthday OR and AND' do
+
+      r =
+        Fugit::Cron.compare_within(
+          '0 0 1-10 1 mon-fri',
+          '0 0 1-10 1 mon-fri&',
+          Time.parse('2025-01-01')..Time.parse('2025-01-31'))
+
+      assert(r.length, 2)
+      assert(r[0].to_s, '2025-01-04 00:00:00 Z')
+      assert(r[1], :first)
+    end
+
+    test 'handles negative monthdays' do
+
+      r =
+        Fugit::Cron.compare_within(
+          '0 0 -1 2 *',
+          '0 0 L 2 *',
+          Time.parse('2023-01-01')..Time.parse('2025-12-31'))
+
+      assert(r, true)
+    end
+
+    test 'compares explicit timezones as real moments' do
+
+      r =
+        Fugit::Cron.compare_within(
+          '0 0 1 1 * UTC',
+          '0 0 1 1 * America/New_York',
+          Time.parse('2024-01-01 00:00:00 UTC')..
+            Time.parse('2024-01-01 06:00:00 UTC'))
+
+      assert(r[0].iso8601, '2024-01-01T00:00:00Z')
+      assert(r[1], :first)
+    end
+
+    test 'handles the seconds field' do
+
+      r =
+        Fugit::Cron.compare_within(
+          '0 0 0 * * *',
+          '1 0 0 * * *',
+          Time.parse('2024-01-01')..Time.parse('2024-01-02'))
+
+      assert(r[0].iso8601, '2024-01-01T00:00:00Z')
+      assert(r[1], :first)
+    end
+
+    test 'finds a difference only at month end' do
+
+      r =
+        Fugit::Cron.compare_within(
+          '0 0 * 1 mon-fri',
+          '0 0 1-30 1 mon-fri&',
+          Time.parse('2025-01-01')..Time.parse('2025-01-31'))
+
+      assert(r[0].to_s, '2025-01-31 00:00:00 Z')
+      assert(r[1], :first)
+    end
+
+    test 'includes an occurrence exactly at the window end' do
+
+      r =
+        Fugit::Cron.compare_within(
+          '0 0 29 2 *',
+          '0 0 1 3 *',
+          Time.parse('2024-03-01')..Time.parse('2024-03-01'))
+
+      assert(r[0].to_s, '2024-03-01 00:00:00 Z')
+      assert(r[1], :second)
+    end
+
+    test 'excludes the end for an exclusive range' do
+
+      r =
+        Fugit::Cron.compare_within(
+          '0 0 * * *',
+          '0 0 1 3 *',
+          Time.parse('2024-03-01')...Time.parse('2024-03-02'))
+
+      assert(r, true)
+    end
+
+    test 'does not mutate frozen cron instances' do
+
+      c0 = Fugit.parse_cron('0 0 * * *').freeze
+      c1 = Fugit.parse_cron('0 0 * * mon-sun').freeze
+
+      r =
+        c0.compare_within(
+          c1,
+          Time.parse('2024-01-01'),
+          Time.parse('2024-02-01'))
+
+      assert(r, true)
+    end
+
+    test 'returns undecided when the common advance budget runs out' do
+
+      r =
+        Fugit::Cron.compare_within(
+          '* * * * *',
+          '* * * * *',
+          Time.parse('2024-01-01')..Time.parse('2024-02-01'),
+          2)
+
+      assert(r, nil)
+    end
+
+    test 'accepts the advance budget as a keyword' do
+
+      r =
+        Fugit::Cron.compare_within(
+          '* * * * *',
+          '* * * * *',
+          Time.parse('2024-01-01')..Time.parse('2024-02-01'),
+          budget: 1)
+
+      assert(r, nil)
+    end
+  end
+
   group 'the module % extension' do
 
     # mostly about 2025-09-26 gh-114
@@ -1974,4 +2113,3 @@ group Fugit do
     end
   end
 end
-

@@ -16,6 +16,7 @@ module Fugit
       '@hourly' => '0 * * * *' }.freeze
     MAXDAYS = [
       nil, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 ].freeze
+    DEFAULT_COMPARISON_BUDGET = 10_000_000
 
     attr_reader(
       :original, :zone)
@@ -65,6 +66,90 @@ module Fugit
 
         parse(s, opts.merge(do_parse: true)) ||
         fail(ArgumentError.new("invalid cron string #{trunc(s)}"))
+      end
+
+      def compare_within(
+        cron0, cron1, time_range, time_end=nil, positional_budget=nil,
+        budget: nil)
+
+        cron0 = do_parse(cron0)
+        cron1 = do_parse(cron1)
+
+        if time_range.is_a?(::Range) && time_end.is_a?(::Integer)
+          positional_budget = time_end
+          time_end = nil
+        end
+
+        start_time, end_time, include_end =
+          if time_range.is_a?(::Range)
+            [
+              ::EtOrbi.make_time(time_range.begin),
+              ::EtOrbi.make_time(time_range.end),
+              !time_range.exclude_end? ]
+          else
+            [
+              ::EtOrbi.make_time(time_range),
+              ::EtOrbi.make_time(time_end),
+              true ]
+          end
+
+        fail(ArgumentError.new('missing comparison window start')) unless start_time
+        fail(ArgumentError.new('missing comparison window end')) unless end_time
+
+        if end_time.to_i < start_time.to_i
+          fail(ArgumentError.new('comparison window ends before it starts'))
+        end
+
+        comparison_budget =
+          if budget.nil?
+            positional_budget || DEFAULT_COMPARISON_BUDGET
+          else
+            budget
+          end
+
+        unless comparison_budget.is_a?(::Integer) && comparison_budget >= 0
+          fail(
+            ArgumentError.new(
+              "comparison budget must be a non-negative integer, " +
+              "got #{comparison_budget.inspect}"))
+        end
+
+        streams = [
+          OccurrenceStream.new(cron0, start_time),
+          OccurrenceStream.new(cron1, start_time) ]
+        times = [ nil, nil ]
+
+        return nil if comparison_budget <= 0
+        comparison_budget -= 1
+        times[0] = streams[0].advance
+        times[1] = streams[1].advance
+
+        end_i = end_time.to_i
+
+        loop do
+          past =
+            times.collect { |t|
+              i = t.to_i
+              i > end_i || (!include_end && i == end_i) }
+
+          return true if past.all?
+
+          if past.any?
+            i = past.index(false)
+            return [ times[i], i == 0 ? :first : :second ]
+          end
+
+          i0 = times[0].to_i
+          i1 = times[1].to_i
+
+          return [ times[0], :first ] if i0 < i1
+          return [ times[1], :second ] if i1 < i0
+
+          return nil if comparison_budget <= 0
+          comparison_budget -= 1
+          times[0] = streams[0].advance
+          times[1] = streams[1].advance
+        end
       end
 
       protected
@@ -401,6 +486,36 @@ module Fugit
       CronIterator
         .new(self, :next_time, sta)
         .take_while { |eot| eot.to_t < ned }
+    end
+
+    # Returns true when the occurrence sequences match in the finite window.
+    # A difference is returned as [ time, :first ] or [ time, :second ]; nil
+    # means the shared advance budget was exhausted before a conclusion.
+    #
+    def compare_within(other, time_range, time_end=nil, positional_budget=nil,
+                       budget: nil)
+
+      self.class.compare_within(
+        self, other, time_range, time_end, positional_budget,
+        budget: budget)
+    end
+
+    class OccurrenceStream
+
+      attr_reader :cron, :current
+
+      def initialize(cron, start_time)
+
+        @cron = cron
+        @cursor = ::EtOrbi.make_time(start_time) - 1
+      end
+
+      def advance
+
+        @current = @cron.next_time(@cursor)
+        @cursor = @current
+        @current
+      end
     end
 
     # Mostly used as a #next_time sanity check.
@@ -985,4 +1100,3 @@ module Fugit
     end
   end
 end
-

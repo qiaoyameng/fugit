@@ -179,6 +179,26 @@ c.within(Time.parse('2024-02-16 12:00')..Time.parse('2024-08-01 12:00'))
     #      '2024-06-10 12:00:00',
     #      '2024-07-08 12:00:00' ]
 
+  # `compare_within` determines whether two cron schedules are equivalent
+  # in a finite window without collecting all occurrences. It compares
+  # real moments, so explicit time zones and the seconds field are honoured.
+  #
+Fugit::Cron.compare_within(
+  '0 0 * * mon-sun',
+  '0 0 * * *',
+  Time.parse('2024-02-01')..Time.parse('2024-03-01'))
+  # => true
+
+Fugit::Cron.compare_within(
+  '0 0 * * *',
+  '0 1 * * *',
+  Time.parse('2024-02-01')..Time.parse('2024-03-01'))
+  # => [ first_only_time, :first ]
+
+  # Returns nil when the common advance budget is exhausted. Pass a budget
+  # as the last positional argument or with `budget:`; the default is
+  # Fugit::Cron::DEFAULT_COMPARISON_BUDGET.
+
 p c.brute_frequency  # => [ 604800, 604800, 53 ]
                      #    [ delta min, delta max, occurrence count ]
 p c.rough_frequency  # => 7 * 24 * 3600 (7d rough frequency)
@@ -713,4 +733,3 @@ The gem [nice_hash](https://github.com/MarioRuiz/nice_hash) gets in the way of `
 ## LICENSE
 
 MIT, see [LICENSE.txt](LICENSE.txt)
-
