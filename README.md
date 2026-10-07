@@ -179,6 +179,32 @@ c.within(Time.parse('2024-02-16 12:00')..Time.parse('2024-08-01 12:00'))
     #      '2024-06-10 12:00:00',
     #      '2024-07-08 12:00:00' ]
 
+# #exact_frequency takes a finite [start_time, end_time) interval and returns
+# exact statistics without storing each occurrence in an array.
+#
+f = c.exact_frequency(
+  Time.parse('2024-02-16 12:00'),
+  Time.parse('2024-08-01 12:00'))
+
+f.occurrences  # => 5
+f.first_time   # => 2024-03-11 12:00:00
+f.last_time    # => 2024-07-08 12:00:00
+f.delta_min    # => 2419200
+f.delta_max    # => 3024000
+f.complete?    # => true
+
+# An advance budget is accepted for high-frequency, long intervals.
+# Partial results are marked incomplete; #confirmed_range is the finite
+# half-open range for which the statistics are exact.
+#
+f = c.exact_frequency(
+  Time.parse('2024-01-01'),
+  Time.parse('2030-01-01'),
+  advance_budget: 10_000)
+
+f.complete?        # => false
+f.confirmed_range  # => 2024-01-01...next confirmed occurrence
+
 p c.brute_frequency  # => [ 604800, 604800, 53 ]
                      #    [ delta min, delta max, occurrence count ]
 p c.rough_frequency  # => 7 * 24 * 3600 (7d rough frequency)
@@ -713,4 +739,3 @@ The gem [nice_hash](https://github.com/MarioRuiz/nice_hash) gets in the way of `
 ## LICENSE
 
 MIT, see [LICENSE.txt](LICENSE.txt)
-

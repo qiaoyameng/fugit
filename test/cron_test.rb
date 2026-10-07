@@ -1066,6 +1066,237 @@ group Fugit::Cron do
     end
   end
 
+  group '#exact_frequency' do
+
+    test 'counts occurrences in a half-open interval with seconds' do
+
+      c = Fugit.parse_cron('15,45 30 8 * * * UTC')
+
+      f = c.exact_frequency(
+        Time.utc(2024, 3, 10, 8, 30, 15),
+        Time.utc(2024, 3, 10, 8, 30, 45))
+
+      assert f.complete?, true
+      assert f.occurrences, 1
+      assert f.first_time.to_i, Time.utc(2024, 3, 10, 8, 30, 15).to_i
+      assert f.last_time.to_i, Time.utc(2024, 3, 10, 8, 30, 15).to_i
+      assert f.delta_min, nil
+      assert f.delta_max, nil
+    end
+
+    test 'includes the start boundary but excludes the end boundary' do
+
+      c = Fugit.parse_cron('0 * * * * UTC')
+      range = Time.utc(2024, 3, 10, 8, 0)...Time.utc(2024, 3, 10, 11, 0)
+
+      f = c.exact_frequency(range)
+
+      assert f.occurrences, 3
+      assert f.first_time.to_i, Time.utc(2024, 3, 10, 8).to_i
+      assert f.last_time.to_i, Time.utc(2024, 3, 10, 10).to_i
+      assert f.delta_min, 3600
+      assert f.delta_max, 3600
+    end
+
+    test 'uses the same half-open rule for inclusive ranges' do
+
+      c = Fugit.parse_cron('0 * * * * UTC')
+      range = Time.utc(2024, 3, 10, 8, 0)..Time.utc(2024, 3, 10, 10, 0)
+
+      f = c.exact_frequency(range)
+
+      assert f.occurrences, 2
+      assert f.first_time.to_i, Time.utc(2024, 3, 10, 8).to_i
+      assert f.last_time.to_i, Time.utc(2024, 3, 10, 9).to_i
+    end
+
+    test 'uses the next whole second for a fractional start' do
+
+      c = Fugit.parse_cron('0 * * * * UTC')
+
+      f = c.exact_frequency(
+        Time.utc(2024, 3, 10, 7, 59, 59, 500_000),
+        Time.utc(2024, 3, 10, 9, 0))
+
+      assert f.occurrences, 1
+      assert f.first_time.to_i, Time.utc(2024, 3, 10, 8).to_i
+    end
+
+    test 'does not count a second trigger before a fractional start' do
+
+      c = Fugit.parse_cron('30 0 8 * * * UTC')
+
+      f = c.exact_frequency(
+        Time.utc(2024, 3, 10, 8, 0, 30, 500_000),
+        Time.utc(2024, 3, 11))
+
+      assert f.occurrences, 0
+    end
+
+    test 'returns nil fields for an empty interval' do
+
+      f = Fugit.parse_cron('0 0 1 1 * UTC').exact_frequency(
+        Time.utc(2024, 2, 1)...Time.utc(2024, 12, 31))
+
+      assert f.complete?, true
+      assert f.occurrences, 0
+      assert f.first_time, nil
+      assert f.last_time, nil
+      assert f.delta_min, nil
+      assert f.delta_max, nil
+    end
+
+    test 'treats equal instants in different zones as an empty interval' do
+
+      f = Fugit.parse_cron('0 * * * * UTC').exact_frequency(
+        Time.utc(2024, 3, 10, 8)...
+        Time.new(2024, 3, 10, 16, 0, 0, '+08:00'))
+
+      assert f.complete?, true
+      assert f.occurrences, 0
+    end
+
+    test 'accepts two arguments and matches short interval enumeration' do
+
+      c = Fugit.parse_cron('0 12 * * mon#2 UTC')
+      sta = Time.utc(2024, 2, 16, 12)
+      ned = Time.utc(2024, 8, 1, 12)
+
+      occurrences = c.within(sta...ned)
+      f = c.exact_frequency(sta, ned)
+
+      assert f.occurrences, occurrences.size
+      assert f.first_time, occurrences.first
+      assert f.last_time, occurrences.last
+      assert f.delta_min,
+        occurrences.each_cons(2).collect { |a, b| (b - a).to_i }.min
+      assert f.delta_max,
+        occurrences.each_cons(2).collect { |a, b| (b - a).to_i }.max
+    end
+
+    test 'defines negative month days across varying month lengths' do
+
+      c = Fugit.parse_cron('30 6 -1 * * UTC')
+
+      f = c.exact_frequency(
+        Time.utc(2024, 1, 1)...Time.utc(2024, 5, 1))
+
+      assert f.occurrences, 4
+      assert f.first_time.to_i, Time.utc(2024, 1, 31, 6, 30).to_i
+      assert f.last_time.to_i, Time.utc(2024, 4, 30, 6, 30).to_i
+      assert f.delta_min, 29 * 86400
+      assert f.delta_max, 31 * 86400
+    end
+
+    test 'defines the day-and intersection extension' do
+
+      c = Fugit.parse_cron('0 0 29 * mon& UTC')
+
+      f = c.exact_frequency(
+        Time.utc(2024, 1, 1)...Time.utc(2025, 1, 1))
+
+      assert f.occurrences, 3
+      assert f.first_time.to_i, Time.utc(2024, 1, 29).to_i
+      assert f.last_time.to_i, Time.utc(2024, 7, 29).to_i
+      assert f.delta_min, 91 * 86400
+      assert f.delta_max, 91 * 86400
+    end
+
+    test 'measures adjacent intervals as real DST instants' do
+
+      c = Fugit.parse_cron('30 3 * * * America/New_York')
+
+      f = c.exact_frequency(
+        Time.utc(2025, 3, 8, 8, 30)...Time.utc(2025, 11, 4, 8, 30))
+
+      assert f.occurrences, 241
+      assert f.delta_min, 23 * 3600
+      assert f.delta_max, 25 * 3600
+    end
+
+    test 'marks an exhausted advance budget as incomplete' do
+
+      c = Fugit.parse_cron('0 * * * * UTC')
+      sta = Time.utc(2024, 3, 10, 8)
+      ned = Time.utc(2024, 3, 10, 12)
+
+      f = c.exact_frequency(sta...ned, advance_budget: 2)
+
+      assert f.complete?, false
+      assert f.incomplete?, true
+      assert f.occurrences, 2
+      assert f.first_time.to_i, sta.to_i
+      assert f.last_time.to_i, Time.utc(2024, 3, 10, 9).to_i
+      assert f.confirmed_range.begin.to_i, sta.to_i
+      assert f.confirmed_range.end.to_i, Time.utc(2024, 3, 10, 10).to_i
+      assert f.delta_min, 3600
+      assert f.delta_max, 3600
+    end
+
+    test 'accepts budget as an alias for advance_budget' do
+
+      f = Fugit.parse_cron('0 * * * * UTC').exact_frequency(
+        Time.utc(2024, 3, 10, 8)...Time.utc(2024, 3, 10, 12),
+        budget: 1)
+
+      assert f.complete?, false
+      assert f.occurrences, 1
+      assert f.advance_budget, 1
+      assert f.confirmed_range.end.to_i, Time.utc(2024, 3, 10, 9).to_i
+    end
+
+    test 'marks a zero budget interval as incomplete before the first count' do
+
+      sta = Time.utc(2024, 3, 10, 8)
+      ned = Time.utc(2024, 3, 10, 12)
+      f = Fugit.parse_cron('0 * * * * UTC').exact_frequency(
+        sta...ned,
+        advance_budget: 0)
+
+      assert f.complete?, false
+      assert f.budget_exhausted?, true
+      assert f.occurrences, 0
+      assert f.confirmed_range.begin.to_i, sta.to_i
+      assert f.confirmed_range.end.to_i, sta.to_i
+      assert f[:budget], 0
+    end
+
+    test 'rejects a negative advance budget' do
+
+      assert_error(
+        lambda {
+          Fugit.parse_cron('* * * * * UTC').exact_frequency(
+            Time.utc(2024, 1, 1)...Time.utc(2024, 1, 2),
+            advance_budget: -1)
+        },
+        ArgumentError,
+        'advance budget cannot be negative')
+    end
+
+    test 'does not retain occurrences in arrays for high frequency intervals' do
+
+      require 'objspace'
+
+      interval = Time.utc(2020, 1, 1)...Time.utc(2030, 1, 1)
+      cron = Fugit.parse_cron('* * * * * * UTC')
+      g = cron.exact_frequency(interval, advance_budget: 10)
+      f = cron.exact_frequency(interval, advance_budget: 10_000)
+
+      small_size = ObjectSpace.memsize_of(g)
+      large_size = ObjectSpace.memsize_of(f)
+
+      instance_variables =
+        f.instance_variables.collect { |name| f.instance_variable_get(name) }
+
+      assert f.complete?, false
+      assert f.occurrences, 10_000
+      assert instance_variables.any? { |v| v.is_a?(Array) || v.is_a?(Hash) },
+        false
+      assert large_size, small_size
+      assert large_size < 2048, true
+    end
+  end
+
   group '.parse' do
 
     test "returns the input immediately if it's a cron" do
@@ -1974,4 +2205,3 @@ group Fugit do
     end
   end
 end
-

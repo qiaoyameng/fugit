@@ -435,6 +435,86 @@ module Fugit
         end
     end
 
+    # Computes exact cron statistics over a finite [start_time, end_time)
+    # interval. It only keeps the current occurrence while iterating, so its
+    # memory use is independent of the number of occurrences.
+    # The end of a Range is excluded even if the range is inclusive.
+    #
+    # `advance_budget` (or `budget`) caps the number of occurrences confirmed
+    # (not the amount of time scanned). When it is exhausted, one more
+    # occurrence is read and the result is marked incomplete with the confirmed
+    # [start_time, next_occurrence) interval.
+    #
+    def exact_frequency(
+      time_range, time_end=nil, advance_budget: nil, budget: nil)
+
+      if advance_budget && budget && advance_budget != budget
+        fail ArgumentError.new('advance_budget and budget must be equal')
+      end
+
+      advance_budget ||= budget
+
+      sta, ned =
+        if time_end.nil?
+          fail ArgumentError.new('missing time end') unless time_range.is_a?(::Range)
+          fail ArgumentError.new('range start is infinite') unless time_range.begin
+          fail ArgumentError.new('range end is infinite') unless time_range.end
+          [ time_range.begin, time_range.end ]
+        else
+          [ time_range, time_end ]
+        end
+
+      sta = ::EtOrbi.make_time(sta)
+      ned = ::EtOrbi.make_time(ned)
+
+      fail ArgumentError.new('range start must precede range end') if sta > ned
+      fail ArgumentError.new('advance budget cannot be negative') \
+        if advance_budget && advance_budget < 0
+
+      count = 0
+      first = nil
+      last = nil
+      previous = nil
+      delta_min = nil
+      delta_max = nil
+      complete = true
+      confirmed_end = ned
+
+      unless sta.to_f == ned.to_f
+
+        boundary = sta.to_i == sta.to_f ? sta : sta + 1
+        t = next_time(boundary - 1)
+
+        while t < ned
+
+          if ! advance_budget.nil? && count >= advance_budget
+            complete = false
+            confirmed_end = t
+            break
+          end
+
+          count += 1
+          first ||= t
+
+          if previous
+            delta = (t - previous).to_i
+            delta_min = delta if delta_min.nil? || delta < delta_min
+            delta_max = delta if delta_max.nil? || delta > delta_max
+          end
+
+          last = t
+          previous = t
+          t = next_time(t)
+        end
+      end
+
+      ExactFrequency.new(
+        sta, ned, count, first, last, delta_min, delta_max,
+        complete, confirmed_end, advance_budget)
+    end
+
+    alias frequency_between exact_frequency
+
     SLOTS = [
       [ :seconds, 1, 60 ],
       [ :minutes, 60, 60 ],
@@ -494,6 +574,102 @@ module Fugit
           spn: Fugit::Duration.new(span.to_i).deflate.to_plain_s,
           spnys: span_years.to_i,
           yocs: yearly_occurrences.to_i
+        }.collect { |k, v| "#{k}: #{v}" }.join(', ')
+      end
+    end
+
+    class ExactFrequency
+
+      attr_reader(
+        :start_time, :end_time, :occurrences, :first_time, :last_time,
+        :delta_min, :delta_max, :advance_budget)
+
+      def initialize(
+        start_time, end_time, occurrences, first_time, last_time,
+        delta_min, delta_max, complete, confirmed_end, advance_budget)
+
+        @start_time = start_time
+        @end_time = end_time
+        @occurrences = occurrences
+        @first_time = first_time
+        @last_time = last_time
+        @delta_min = delta_min
+        @delta_max = delta_max
+        @complete = complete
+        @confirmed_end = confirmed_end
+        @advance_budget = advance_budget
+      end
+
+      def count; @occurrences; end
+      alias first first_time
+      alias last last_time
+      alias size occurrences
+      alias length occurrences
+      alias occurrence_count occurrences
+      alias minimum_delta delta_min
+      alias maximum_delta delta_max
+      alias minimum_interval delta_min
+      alias maximum_interval delta_max
+      alias min_interval delta_min
+      alias max_interval delta_max
+      alias interval_min delta_min
+      alias interval_max delta_max
+
+      def complete?; @complete; end
+      def incomplete?; ! complete?; end
+      alias partial? incomplete?
+      alias truncated? incomplete?
+      def budget_exhausted?; incomplete?; end
+
+      def confirmed_range
+
+        @start_time...@confirmed_end
+      end
+
+      def covered_range
+
+        confirmed_range
+      end
+
+      def to_h
+
+        {
+          start_time: @start_time,
+          end_time: @end_time,
+          occurrences: @occurrences,
+          count: @occurrences,
+          size: @occurrences,
+          length: @occurrences,
+          first_time: @first_time,
+          first: @first_time,
+          last_time: @last_time,
+          last: @last_time,
+          delta_min: @delta_min,
+          delta_max: @delta_max,
+          min_interval: @delta_min,
+          max_interval: @delta_max,
+          complete: @complete,
+          confirmed_range: confirmed_range,
+          covered_range: confirmed_range,
+          advance_budget: @advance_budget,
+          budget: @advance_budget }
+      end
+
+      def [](key)
+
+        to_h[key]
+      end
+
+      def to_debug_s
+
+        {
+          ocs: @occurrences,
+          first: @first_time && @first_time.to_s,
+          last: @last_time && @last_time.to_s,
+          dmin: @delta_min,
+          dmax: @delta_max,
+          complete: @complete,
+          confirmed_end: @confirmed_end.to_s
         }.collect { |k, v| "#{k}: #{v}" }.join(', ')
       end
     end
@@ -985,4 +1161,3 @@ module Fugit
     end
   end
 end
-
