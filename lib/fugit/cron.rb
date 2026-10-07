@@ -67,6 +67,66 @@ module Fugit
         fail(ArgumentError.new("invalid cron string #{trunc(s)}"))
       end
 
+      # Compares two crons over a finite time window.
+      #
+      # The window is [ start, end [, a trigger right at the start is
+      # taken into account, a trigger right at the end is not.
+      #
+      # Returns:
+      #   * nil when both crons trigger at the same times in the window
+      #   * [ time, 0 ] when `time` is the first moment in the window
+      #     triggered by the first cron only
+      #   * [ time, 1 ] when `time` is the first moment in the window
+      #     triggered by the second cron only
+      #   * :undecided when the shared advance `budget` got exhausted
+      #     before a decision could be reached
+      #
+      # The two crons are walked in parallel, trigger time by trigger time.
+      # No occurrence list is collected and the given crons are not
+      # modified.
+      #
+      def compare_within(cron0, cron1, time_range, time_end=nil, budget: COMPARE_BUDGET)
+
+        c0 = cron0.is_a?(Cron) ? cron0 : do_parse(cron0)
+        c1 = cron1.is_a?(Cron) ? cron1 : do_parse(cron1)
+
+        sta, ned =
+          time_range.is_a?(::Range) ?
+          [ time_range.begin, time_range.end ] :
+          [ time_range, time_end ]
+        sta = ::EtOrbi.make_time(sta)
+        ned = ::EtOrbi.make_time(ned)
+
+        return nil if sta.to_i >= ned.to_i
+
+        from = sta - 1
+          #
+          # #next_time is strict, starting one second early
+          # makes the window start inclusive
+
+        budget -= 1; return :undecided if budget < 0
+        t0 = c0.next_time(from)
+        budget -= 1; return :undecided if budget < 0
+        t1 = c1.next_time(from)
+
+        loop do
+
+          in0 = t0 < ned
+          in1 = t1 < ned
+
+          return nil unless in0 || in1
+          return [ t0, 0 ] if in0 && ( ! in1 || t0 < t1)
+          return [ t1, 1 ] if in1 && ( ! in0 || t1 < t0)
+
+          # t0 == t1, both crons trigger at that time, advance both
+
+          budget -= 1; return :undecided if budget < 0
+          t0 = c0.next_time(t0)
+          budget -= 1; return :undecided if budget < 0
+          t1 = c1.next_time(t1)
+        end
+      end
+
       protected
 
       def trunc(s)
@@ -268,6 +328,11 @@ module Fugit
       # at 167 iterations, I placed it at 2048 after experimenting with
       # gh-18 and noticing some > 1024 for some experiments. 2048 should
       # be ok.
+
+    COMPARE_BUDGET = 1_000_000
+      #
+      # Default shared advance budget for .compare_within,
+      # each #next_time call, for both crons, consumes 1
 
     def next_time(from=::EtOrbi::EoTime.now)
 
@@ -985,4 +1050,3 @@ module Fugit
     end
   end
 end
-

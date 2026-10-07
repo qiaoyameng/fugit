@@ -1794,6 +1794,182 @@ group Fugit::Cron do
     end
   end
 
+  group '.compare_within' do
+
+    cw = lambda do |c0, c1, sta, ned, budget=nil|
+
+      opts = {}
+      opts[:budget] = budget if budget
+
+      r = Fugit::Cron.compare_within(
+        c0, c1, Time.parse(sta)..Time.parse(ned), **opts)
+
+      r.is_a?(Array) ? [ r[0].to_t.strftime('%F %T'), r[1] ] : r
+    end
+
+    group 'same sequence, different syntax' do
+
+      [
+
+        [ '0 12 * * *', '@noon' ],
+        [ '0 12 * * 1-5', '0 12 * * mon-fri' ],
+        [ '0 0 12 * * *', '0 12 * * *' ], # explicit seconds
+        [ '0 9 * * * Etc/UTC', '0 10 * * * Europe/Paris' ], # winter window
+
+      ].each do |c0, c1|
+
+        test "returns nil for #{c0.inspect} vs #{c1.inspect}" do
+
+          in_zone 'UTC' do
+
+            assert cw.call(c0, c1, '2024-01-01', '2024-02-01'), nil
+          end
+        end
+      end
+    end
+
+    test 'returns the first divergence, at the end of the month' do
+
+      in_zone 'UTC' do
+
+        # "last day of month" vs "31st", they agree on 2024-01-31,
+        # then diverge on 2024-02-29
+
+        assert(
+           cw.call('0 0 L * *', '0 0 31 * *', '2024-01-15', '2024-03-15'),
+          [ '2024-02-29 00:00:00', 0 ])
+      end
+    end
+
+    test 'excludes the window before the returned divergence' do
+
+      in_zone 'UTC' do
+
+        c0 = Fugit::Cron.parse('0 0 L * *')
+        c1 = Fugit::Cron.parse('0 0 31 * *')
+        sta = Time.parse('2024-01-15')
+
+        t, side =
+          Fugit::Cron.compare_within(c0, c1, sta..Time.parse('2024-03-15'))
+
+        assert side, 0
+        assert c0.match?(t), true
+        assert c1.match?(t), false
+
+        assert( # no divergence before t
+          c0.within(sta, t.to_t).map(&:to_i),
+          c1.within(sta, t.to_t).map(&:to_i))
+      end
+    end
+
+    test 'includes a trigger right at the window start' do
+
+      in_zone 'UTC' do
+
+        assert(
+           cw.call('0 0 * * *', '0 1 * * *', '2024-03-01 00:00', '2024-03-02 00:00'),
+          [ '2024-03-01 00:00:00', 0 ])
+      end
+    end
+
+    test 'excludes a trigger right at the window end' do
+
+      in_zone 'UTC' do
+
+        assert( # 2024-03-01 00:00 is the end, excluded
+           cw.call('0 0 1 3 *', '0 0 2 3 *', '2024-02-28', '2024-03-01 00:00'),
+          nil)
+
+        assert( # one second more and it is in
+           cw.call('0 0 1 3 *', '0 0 2 3 *', '2024-02-28', '2024-03-01 00:01'),
+          [ '2024-03-01 00:00:00', 0 ])
+      end
+    end
+
+    test 'points at the second cron when it triggers first alone' do
+
+      in_zone 'UTC' do
+
+        assert(
+           cw.call('0 0 1 * *', '0 0 * * *', '2024-03-01', '2024-03-15'),
+          [ '2024-03-02 00:00:00', 1 ])
+      end
+    end
+
+    test 'honours the weekday/monthday OR vs AND (&) semantics' do
+
+      in_zone 'UTC' do
+
+        # Fridays OR the 1st/15th vs Fridays AND the 1st/15th
+
+        assert(
+           cw.call('30 4 1,15 * 5', '30 4 1,15 * 5&', '2017-01-03', '2017-02-01'),
+          [ '2017-01-06 04:30:00', 0 ])
+      end
+    end
+
+    test 'honours the seconds field' do
+
+      in_zone 'UTC' do
+
+        assert(
+           cw.call('30 0 12 * * *', '0 0 12 * * *', '2024-03-01', '2024-03-03'),
+          [ '2024-03-01 12:00:00', 1 ])
+      end
+    end
+
+    test 'honours explicit timezones' do
+
+      in_zone 'UTC' do
+
+        assert(
+           cw.call('0 9 * * * Europe/Berlin', '0 9 * * * America/New_York',
+             '2024-01-01', '2024-01-03'),
+          [ '2024-01-01 08:00:00', 0 ])
+      end
+    end
+
+    test 'returns :undecided when the shared budget is exhausted' do
+
+      in_zone 'UTC' do
+
+        assert(
+           cw.call('0 0 * * *', '0 0 * * *', '2024-01-01', '2024-02-01', 3),
+          :undecided)
+      end
+    end
+
+    test 'does not modify the given crons' do
+
+      in_zone 'UTC' do
+
+        c0 = Fugit::Cron.parse('0 0 L * *')
+        c1 = Fugit::Cron.parse('0 0 31 * *')
+
+        a0 = c0.to_a
+        a1 = c1.to_a
+
+        Fugit::Cron.compare_within(
+          c0, c1, Time.parse('2024-01-15')..Time.parse('2024-03-15'))
+
+        assert c0.to_a, a0
+        assert c1.to_a, a1
+        assert c0.to_cron_s, '0 0 -1 * *'
+        assert c1.to_cron_s, '0 0 31 * *'
+      end
+    end
+
+    test 'raises on an invalid cron string' do
+
+      assert_error(
+        lambda {
+          Fugit::Cron.compare_within(
+            'nada', '0 0 * * *', Time.parse('2024-01-01')..Time.parse('2024-02-01'))
+        },
+        ArgumentError, 'invalid cron string "nada"')
+    end
+  end
+
   group 'the module % extension' do
 
     # mostly about 2025-09-26 gh-114
@@ -1974,4 +2150,3 @@ group Fugit do
     end
   end
 end
-
