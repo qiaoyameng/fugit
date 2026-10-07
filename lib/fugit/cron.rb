@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'digest'
+
 module Fugit
 
   class Cron
@@ -592,9 +594,11 @@ module Fugit
       self
     end
 
-    def expand(min, max, opts, r)
+    def expand(min, max, opts, r, field=nil)
 
-      sta, edn, sep, sla = r
+      sta, edn, sep, sla, _ha, _mo, hsh = r
+
+      return hash_expand(min, max, sta, edn, sla, field, opts) if hsh
 
       #return false if sla && sla > max
         #
@@ -618,6 +622,67 @@ module Fugit
       edn = max if edn == nil || edn < 0 && sta > 0
 
       range(min, max, sta, edn, sla)
+    end
+
+    # H ("hashed") fields, a Jenkins-like cron extension.
+    #
+    # The job_id given at parse time is hashed together with the original
+    # cron string and the position of the field, so that the same job_id,
+    # expression, and field always resolves to the same values, in any
+    # Ruby process.
+    #
+    # Unlike the `~` (random) extension, a step keeps the whole period
+    # structure, "H(10-19)/10" does not collapse into a single value.
+    #
+    def hash_expand(min, max, sta, edn, sla, field, opts)
+
+      job_id = opts[:job_id]
+
+      unless job_id
+
+        fail ArgumentError.new(
+          "missing :job_id for hashed (H) field in #{@original.inspect}"
+        ) if opts[:do_parse]
+
+        return false
+      end
+
+      sta = min if sta.nil?
+      edn = max if edn.nil?
+
+      return false if sta < min || edn > max || sta > edn
+        #
+        # empty or out of field range, reject
+
+      return false if sla && sla < 1
+
+      n = edn - sta + 1
+
+      # Hash determines the single value (bare "H" or "H(a-b)").
+      #
+      return [ sta + stable_hash(job_id, field) % n ] if sla.nil?
+
+      # Hash determines the phase (the start point) inside the range.
+      #
+      start = sta + stable_hash(job_id, field) % (sla < n ? sla : n)
+
+      # The step then covers the whole field, "H(10-19)/10" keeps
+      # 10,20,30,40,50 (it is not collapsed into a single random point).
+      #
+      (start..max).step(sla).to_a
+    end
+
+    # Salt for the position of the field in a cron line. Minutes and
+    # hours share the same salt in 5 and 6-field forms; seconds get 0
+    # (only present in 6-field forms).
+    #
+    HASH_FIELD_SALTS = { seconds: 0, minutes: 1, hours: 2 }.freeze
+
+    def stable_hash(job_id, field)
+
+      Digest::MD5
+        .hexdigest("#{job_id}\0#{@original}\0#{HASH_FIELD_SALTS.fetch(field)}")
+        .to_i(16)
     end
 
     def random(min, max, sta, edn, sla, opts)
@@ -684,14 +749,17 @@ module Fugit
 
       null = false
 
-      r = arr
-        .collect { |v|
-          expand(min, max, opts, v) }
-        .flatten(1)
-        .collect { |e|
-          return false if e == false
-          null = null || e == nil
-          (key == :hours && e == 24) ? 0 : e }
+      expanded =
+        arr.collect { |v| expand(min, max, opts, v, key) }
+
+      return false if expanded.any? { |e| e == false }
+
+      r =
+        expanded
+          .flatten(1)
+          .collect { |e|
+            null = null || e == nil
+            (key == :hours && e == 24) ? 0 : e }
 
       return nil if null
       r.uniq.sort
@@ -805,6 +873,12 @@ module Fugit
 
       def slash(i); rex(:slash, i, /\/\d\d?/); end
 
+      # h: hashed (H) element, Jenkins-like, sec/min/hou only
+      def h_elt(i)
+        rex(:hsh, i,
+          /H(?:\((\d+)?(?:-(\d+))?\)|(\d+)?-(\d+))?(?:\/\d\d?)?(?=[\s,]|\z)/)
+      end
+
       def mos(i); rex(:mos, i, /[0-5]?\d/); end # min or sec
       def hou(i); rex(:hou, i, /(2[0-4]|[01]?[0-9])/); end
       def dom(i); rex(:dom, i, /(-?(3[01]|[12][0-9]|0?[1-9])|last|l)/i); end
@@ -848,8 +922,8 @@ module Fugit
       def sorws_dow(i); seq(nil, i, :sor_dow, :slash, '?'); end
 
       # ssws: slash or sorws
-      def mos_elt(i); alt(:elt, i, :slash, :sorws_mos); end
-      def hou_elt(i); alt(:elt, i, :slash, :sorws_hou); end
+      def mos_elt(i); alt(:elt, i, :h_elt, :slash, :sorws_mos); end
+      def hou_elt(i); alt(:elt, i, :h_elt, :slash, :sorws_hou); end
       def dom_elt(i); alt(:elt, i, :slash, :sorws_dom); end
       def mon_elt(i); alt(:elt, i, :slash, :sorws_mon); end
       def dow_elt(i); alt(:elt, i, :slash, :sorws_dow); end
@@ -918,6 +992,23 @@ module Fugit
 
       def rewrite_elt(k, t)
 
+        h = t.subgather(nil).find { |tt| tt.name == :hsh }
+
+        if h
+          m = h.string.match(
+            /\AH(?:\((\d+)?(?:-(\d+))?\)|(\d+)?-(\d+))?(?:\/(\d+))?\z/)
+
+          a0 = m[1] || m[3]
+          z0 = m[2] || m[4]
+
+          return [
+            a0 ? a0.to_i : nil,
+            z0 ? z0.to_i : nil,
+            nil,
+            m[5] ? m[5].to_i : nil,
+            nil, nil, true ]
+        end
+
         at, zt, spt, slt, hat, mot = nil
 
         t.subgather(nil).each do |tt|
@@ -946,7 +1037,7 @@ module Fugit
         #a, z = z, a if a && z && a > z
           # handled downstream since gh-27
 
-        [ a, z, sp, sl, ha, mo ]
+        [ a, z, sp, sl, ha, mo, false ]
       end
 
       def rewrite_entry(t)
@@ -985,4 +1076,3 @@ module Fugit
     end
   end
 end
-

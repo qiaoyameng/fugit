@@ -509,6 +509,38 @@ Fugit.parse('~ * * * *', random: SecureRandom) # on a cryptographically secure r
 Please note that the random values are determined at parse time. So `"~29 * * * *"` at parse time could become `"17 * * * *"` for example and go on triggering every hour at minute 17, until a new parsing occurs and another (or the same) minute is picked. This aligns with the OpenBSD [`man 5 crontab`](https://man.openbsd.org/crontab.5), OpenBSD `crond` rolling the dice at load time.
 
 
+### the hashed extension
+
+Fugit accepts the `H` character (for "hashed") to spread schedules that would otherwise pile up at round times. It is a nod to the Jenkins [`H` cron symbol](https://www.jenkins.io/doc/book/pipeline/syntax/#cron-syntax).
+
+Unlike the [random extension](#the-random-extension), the resolved values are not re-rolled at every parse: the caller provides a stable `job_id:`, and the same job id, cron string, and field position always expand to the same values, in any Ruby process.
+
+It is only accepted in the second, minute, and hour fields. The day-of-month, month, and day-of-week fields reject it.
+
+```ruby
+Fugit.parse_cron('H * * * *', job_id: 'report-42')
+  # ==> '48 * * * *', every hour at minute 48
+
+Fugit.parse_cron('H(0-29)/10 * * * *', job_id: 'report-42')
+  # ==> '3,13,23,33,43,53 * * * *'
+```
+
+The step keeps the whole period structure. `H(0-29)/10` does not collapse into a single point: the hash only chooses the phase inside the range, then the step covers the whole field.
+
+Each field is hashed independently (the field position is part of the hash key), so a minute `H` and an hour `H` in the same string are not coupled.
+
+Without a `job_id:`, parsing returns `nil` (or raises for `Fugit.do_parse_cron` / `Fugit.do_parse`), as do empty or out of field ranges:
+
+```ruby
+Fugit.parse_cron('H * * * *')                  # ==> nil
+Fugit.do_parse_cron('H * * * *')               # ==> ArgumentError
+Fugit.parse_cron('H(70-80) * * * *', job_id: 1) # ==> nil
+Fugit.parse_cron('0 0 H * *', job_id: 1)       # ==> nil, unsupported field
+```
+
+As for any cron, the original string is available via `#original` and the resolved, concrete expression via `#to_cron_s`. Re-parsing the concrete expression yields the same `#next_time`, `#previous_time`, and `#match?` points.
+
+
 ### the second extension
 
 Fugit accepts cron strings with five elements, `minute hour day-of-month month day-of-week`, the standard cron format or six elements `second minute hour day-of-month month day-of-week`.
@@ -713,4 +745,3 @@ The gem [nice_hash](https://github.com/MarioRuiz/nice_hash) gets in the way of `
 ## LICENSE
 
 MIT, see [LICENSE.txt](LICENSE.txt)
-
