@@ -179,6 +179,33 @@ c.within(Time.parse('2024-02-16 12:00')..Time.parse('2024-08-01 12:00'))
     #      '2024-06-10 12:00:00',
     #      '2024-07-08 12:00:00' ]
 
+  # `#exact_frequency` gathers exact statistics for the half-open interval
+  # [begin, end). It supports cron expressions with seconds, counts real
+  # elapsed seconds across DST transitions, and only retains the first and
+  # last confirmed occurrences.
+  #
+f = c.exact_frequency(
+      Time.parse('2024-02-16 12:00:00')...Time.parse('2024-08-01 12:00:00'))
+
+f.occurrence_count  # => 5
+f.first_time        # first occurrence in the interval
+f.last_time         # last occurrence in the interval
+f.delta_min         # minimum gap, in seconds
+f.delta_max         # maximum gap, in seconds
+f.complete?         # => true
+
+  # A budget limits the number of occurrence advances in that call,
+  # including advances over gaps with no occurrences. The result remains
+  # partial and carries the half-open range that has already been
+  # confirmed; call `#continue` to resume it.
+  #
+p = c.exact_frequency(
+      Time.parse('2024-02-16 12:00:00')...Time.parse('2024-08-01 12:00:00'),
+      budget: 100)
+p.partial?           # => true
+p.covered_range      # confirmed range, up to and including p.last_time
+p.continue(100)      # resumes without re-counting confirmed occurrences
+
 p c.brute_frequency  # => [ 604800, 604800, 53 ]
                      #    [ delta min, delta max, occurrence count ]
 p c.rough_frequency  # => 7 * 24 * 3600 (7d rough frequency)
@@ -713,4 +740,3 @@ The gem [nice_hash](https://github.com/MarioRuiz/nice_hash) gets in the way of `
 ## LICENSE
 
 MIT, see [LICENSE.txt](LICENSE.txt)
-

@@ -403,6 +403,44 @@ module Fugit
         .take_while { |eot| eot.to_t < ned }
     end
 
+    # Computes exact occurrence statistics for a half-open time interval.
+    # A ::Range must therefore exclude its end (use `from...to`); the two
+    # argument form is always interpreted as `[from, to)`.
+    #
+    # Occurrences at the beginning of the interval are included, while
+    # occurrences at the end are excluded. Times are compared as real
+    # instants, so gaps crossing DST transitions are measured in elapsed
+    # seconds.
+    #
+    # Only the first and last confirmed occurrences are retained. Passing
+    # a :budget limits the number of occurrence advances performed by that
+    # call, including advances over intervals without occurrences. The
+    # returned ExactFrequency is then marked as partial and carries the
+    # half-open range already confirmed. Call #continue to resume it.
+    #
+    def exact_frequency(time_range, time_end=nil, opts={})
+
+      if time_range.is_a?(::Range)
+        unless time_range.exclude_end?
+          fail ArgumentError.new(
+            'exact_frequency uses a half-open interval, use from...to')
+        end
+
+        sta = ::EtOrbi.make_time(time_range.begin)
+        ned = ::EtOrbi.make_time(time_range.end)
+        opts = time_end if time_end.is_a?(::Hash)
+      else
+        sta = ::EtOrbi.make_time(time_range)
+        ned = ::EtOrbi.make_time(time_end)
+      end
+
+      fail ArgumentError.new(
+        "expected the frequency interval end to be at or after its beginning"
+      ) if ned.to_f < sta.to_f
+
+      ExactFrequency.new(self, sta, ned, opts)
+    end
+
     # Mostly used as a #next_time sanity check.
     # Avoid for "business" use, it's slow.
     #
@@ -495,6 +533,184 @@ module Fugit
           spnys: span_years.to_i,
           yocs: yearly_occurrences.to_i
         }.collect { |k, v| "#{k}: #{v}" }.join(', ')
+      end
+    end
+
+    class ExactFrequency
+
+      attr_reader(
+        :range_begin, :range_end,
+        :first_time, :last_time,
+        :occurrence_count, :delta_min, :delta_max)
+
+      def initialize(cron, range_begin, range_end, opts={})
+
+        @cron = cron
+        @range_begin = range_begin
+        @range_end = range_end
+
+        @first_time = nil
+        @last_time = nil
+        @occurrence_count = 0
+        @delta_min = nil
+        @delta_max = nil
+
+        @next_time = nil
+        @complete = @range_begin.to_f >= @range_end.to_f
+
+        advance!(opts[:budget]) unless complete?
+      end
+
+      def complete?
+
+        @complete == true
+      end
+      alias finished? complete?
+
+      def partial?
+
+        ! complete?
+      end
+
+      def occurrences
+
+        @occurrence_count
+      end
+      alias size occurrences
+      alias count occurrences
+      alias trigger_count occurrences
+
+      def min_gap
+
+        @delta_min
+      end
+      alias minimum_gap min_gap
+      alias min_delta min_gap
+
+      def max_gap
+
+        @delta_max
+      end
+      alias maximum_gap max_gap
+      alias max_delta max_gap
+
+      def first_at
+
+        @first_time
+      end
+
+      def last_at
+
+        @last_time
+      end
+
+      def covered_end
+
+        return @range_end if complete?
+        return @range_begin unless @last_time
+
+        @last_time + 1
+      end
+
+      def covered_range
+
+        @range_begin...covered_end
+      end
+
+      def continue(budget=nil)
+
+        return dup if complete?
+
+        dup.advance!(budget)
+      end
+      alias resume continue
+
+      def advance(budget=nil)
+
+        return dup if complete?
+
+        dup.advance!(budget)
+      end
+
+      def to_h
+
+        { range_begin: @range_begin,
+          range_end: @range_end,
+          covered_end: covered_end,
+          first_time: @first_time,
+          last_time: @last_time,
+          occurrence_count: @occurrence_count,
+          delta_min: @delta_min,
+          delta_max: @delta_max,
+          complete: complete? }
+      end
+
+      def to_a
+
+        [ @occurrence_count, @first_time, @last_time, @delta_min, @delta_max ]
+      end
+
+      protected
+
+      def advance!(budget)
+
+        unless budget.nil?
+          budget = budget.to_i
+          fail ArgumentError.new('budget must be non-negative') if budget < 0
+        end
+
+        until complete? || (budget && budget <= 0)
+
+          t = next_occurrence
+          budget -= 1 if budget
+
+          if t.nil? || t.to_f >= @range_end.to_f
+            @next_time = nil
+            @complete = true
+            break
+          end
+
+          if @last_time
+            delta = t.to_i - @last_time.to_i
+            @delta_min = delta if @delta_min.nil? || delta < @delta_min
+            @delta_max = delta if @delta_max.nil? || delta > @delta_max
+          else
+            @first_time = t
+          end
+
+          @last_time = t
+          @occurrence_count += 1
+          @next_time = nil
+        end
+
+        self
+      end
+
+      def next_occurrence
+
+        @next_time ||=
+          if @last_time
+            next_cron_time(@last_time)
+          elsif integer_instant?(@range_begin) && @cron.match?(@range_begin)
+            @range_begin
+          else
+            next_cron_time(@range_begin)
+          end
+      end
+
+      def next_cron_time(from)
+
+        @cron.next_time(from)
+      rescue RuntimeError => error
+
+        raise unless error.message.include?('too many loops')
+
+        nil
+      end
+
+      def integer_instant?(t)
+
+        t.to_f == t.to_i.to_f
       end
     end
 
@@ -985,4 +1201,3 @@ module Fugit
     end
   end
 end
-

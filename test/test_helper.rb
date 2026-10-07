@@ -79,6 +79,30 @@ class Probatio::Context
 
     [ r, monow - t0 ]
   end
+
+  def exact_cron_frequency(cron, from, to, opts={})
+
+    Fugit
+      .parse_cron(cron)
+      .exact_frequency(
+        EtOrbi.make_time(from, 'UTC')...EtOrbi.make_time(to, 'UTC'),
+        opts)
+  end
+
+  def enumerate_cron_seconds(cron, from, to)
+
+    c = Fugit.parse_cron(cron)
+    from = EtOrbi.make_time(from, 'UTC').to_i
+    to = EtOrbi.make_time(to, 'UTC').to_i
+    step =
+      if c.seconds
+        c.seconds.inject(60) { |a, s| a.gcd(s) }
+      else
+        c.original.split(/\s+/).length > 5 ? 1 : 60
+      end
+
+    (from...to).step(step).select { |i| c.match?(::Time.at(i).utc) }
+  end
 end # Probatio::Context
 
 
@@ -116,4 +140,3 @@ class Time
     end
   end
 end
-

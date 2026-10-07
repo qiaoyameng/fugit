@@ -2,6 +2,10 @@
 # CHANGELOG.md
 
 
+## unreleased
+
+* Implement exact, finite interval cron frequency statistics
+
 ## fugit 1.14.0 released 2026-09-14
 
 * Reject input when length > 256

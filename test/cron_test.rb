@@ -1794,6 +1794,201 @@ group Fugit::Cron do
     end
   end
 
+  group '#exact_frequency' do
+
+    test 'treats both interval boundaries as a half-open range' do
+
+      [
+        Time.parse('2024-01-01')...Time.parse('2024-01-03'),
+        [ Time.parse('2024-01-01'), Time.parse('2024-01-03') ]
+      ].each do |range|
+
+        f =
+          if range.is_a?(::Array)
+            Fugit.parse_cron('0 0 * * *').exact_frequency(*range)
+          else
+            Fugit.parse_cron('0 0 * * *').exact_frequency(range)
+          end
+
+        assert(f.occurrence_count, 2)
+        assert(f.first_time.to_s, '2024-01-01 00:00:00 +0800')
+        assert(f.last_time.to_s, '2024-01-02 00:00:00 +0800')
+      end
+
+      assert_error(
+        lambda {
+          Fugit.parse_cron('0 0 * * *')
+            .exact_frequency(Time.parse('2024-01-01')..Time.parse('2024-01-03'))
+        },
+        ArgumentError,
+        'exact_frequency uses a half-open interval, use from...to')
+    end
+
+    test 'defines empty and single occurrence intervals' do
+
+      e = exact_cron_frequency('0 0 * * *', '2024-01-01', '2024-01-01')
+
+      assert(e.complete?, true)
+      assert(e.occurrence_count, 0)
+      assert(e.first_time, nil)
+      assert(e.last_time, nil)
+      assert(e.delta_min, nil)
+      assert(e.delta_max, nil)
+      assert(e.covered_end, e.range_end)
+
+      s = exact_cron_frequency('0 0 * * *', '2024-01-01', '2024-01-02')
+
+      assert(s.complete?, true)
+      assert(s.occurrence_count, 1)
+      assert(s.first_time, s.last_time)
+      assert(s.trigger_count, 1)
+      assert(s.first_at, s.first_time)
+      assert(s.last_at, s.last_time)
+      assert(s.delta_min, nil)
+      assert(s.delta_max, nil)
+    end
+
+    test 'rejects invalid intervals and budgets' do
+
+      assert_error(
+        lambda {
+          exact_cron_frequency(
+            '0 0 * * * UTC', '2024-01-02', '2024-01-01')
+        },
+        ArgumentError,
+        'expected the frequency interval end to be at or after its ' +
+        'beginning')
+
+      assert_error(
+        lambda {
+          exact_cron_frequency(
+            '0 0 * * * UTC', '2024-01-01', '2024-01-02', budget: -1)
+        },
+        ArgumentError,
+        'budget must be non-negative')
+    end
+
+    test 'supports cron expressions with seconds' do
+
+      f = exact_cron_frequency(
+        '*/15 * * * * *', '2024-01-01', '2024-01-01 00:01')
+
+      assert(f.occurrence_count, 4)
+      assert(f.first_time.iso8601, '2024-01-01T00:00:00Z')
+      assert(f.last_time.iso8601, '2024-01-01T00:00:45Z')
+      assert(f.delta_min, 15)
+      assert(f.delta_max, 15)
+      assert(f.min_delta, 15)
+      assert(f.max_delta, 15)
+      assert(f.to_a, [ 4, f.first_time, f.last_time, 15, 15 ])
+    end
+
+    test 'measures adjacent gaps as real instants across DST transitions' do
+
+      spring = exact_cron_frequency(
+        '0 0 * * * America/New_York',
+        '2024-03-09 05:00', '2024-03-12 04:00')
+
+      assert(spring.occurrence_count, 3)
+      assert(spring.delta_min, 82800)
+      assert(spring.delta_max, 86400)
+
+      fall = exact_cron_frequency(
+        '0 0 * * * America/New_York',
+        '2024-11-03 04:00', '2024-11-06 05:00')
+
+      assert(fall.occurrence_count, 3)
+      assert(fall.delta_min, 86400)
+      assert(fall.delta_max, 90000)
+    end
+
+    test 'defines negative month days and the day-and extension' do
+
+      f = exact_cron_frequency('0 0 -1 * * UTC', '2024-02-01', '2024-04-01')
+
+      assert(f.occurrence_count, 2)
+      assert(f.first_time.iso8601, '2024-02-29T00:00:00Z')
+      assert(f.last_time.iso8601, '2024-03-31T00:00:00Z')
+      assert(f.delta_min, 2678400)
+
+      a = exact_cron_frequency(
+        '0 0 1-10 * mon& UTC', '2024-01-01', '2024-07-01')
+
+      assert(a.occurrence_count, 9)
+      assert(a.first_time.iso8601, '2024-01-01T00:00:00Z')
+      assert(a.last_time.iso8601, '2024-06-10T00:00:00Z')
+      assert(a.delta_min, 604800)
+      assert(a.delta_max, 2419200)
+
+      impossible =
+        exact_cron_frequency('0 0 -30 feb * UTC', '2024-02-01', '2024-03-01')
+
+      assert(impossible.complete?, true)
+      assert(impossible.occurrence_count, 0)
+    end
+
+    test 'stays partial under budget and resumes with the confirmed range' do
+
+      sparse = exact_cron_frequency(
+        '0 0 1 * * UTC', '2024-01-31 12:00', '2024-12-31', budget: 1)
+
+      assert(sparse.complete?, false)
+      assert(sparse.occurrence_count, 1)
+      assert(sparse.first_time.iso8601, '2024-02-01T00:00:00Z')
+      assert(sparse.covered_end.iso8601, '2024-02-01T00:00:01Z')
+
+      f = exact_cron_frequency(
+        '*/15 * * * * *', '2024-01-01', '2024-01-01 00:01:30',
+        budget: 3)
+
+      assert(f.complete?, false)
+      assert(f.occurrence_count, 3)
+      assert(f.last_time.iso8601, '2024-01-01T00:00:30Z')
+      assert(f.covered_end.iso8601, '2024-01-01T00:00:31Z')
+      assert(f.delta_min, 15)
+      assert(f.delta_max, 15)
+
+      g = f.continue(2)
+
+      assert(f.complete?, false)
+      assert(f.occurrence_count, 3)
+      assert(g.complete?, false)
+      assert(g.occurrence_count, 5)
+      assert(g.first_time, f.first_time)
+      assert(g.last_time.iso8601, '2024-01-01T00:01:00Z')
+      assert(g.covered_end.iso8601, '2024-01-01T00:01:01Z')
+
+      h = g.continue
+
+      assert(h.complete?, true)
+      assert(h.occurrence_count, 6)
+      assert(h.covered_end, h.range_end)
+      assert(h.delta_min, 15)
+      assert(h.delta_max, 15)
+    end
+
+    test 'matches short one-second interval enumerations' do
+
+      cases = [
+        [ '0 0 * * * UTC', '2024-01-01', '2024-01-04' ],
+        [ '*/15 * * * * * UTC', '2024-01-01', '2024-01-01 00:05' ],
+        [ '*/1 * * * * * UTC', '2024-01-01', '2024-01-01 00:00:05' ],
+        [ '0 0 1-10 * mon& UTC', '2024-01-05', '2024-01-10' ],
+        [ '0 0 -1 * * UTC', '2024-02-01', '2024-04-01' ]
+      ]
+
+      cases.each do |cron, from, to|
+
+        f = exact_cron_frequency(cron, from, to)
+        expected = enumerate_cron_seconds(cron, from, to)
+
+        assert(f.occurrence_count, expected.size)
+        assert(f.first_time.to_i, expected.first) unless expected.empty?
+        assert(f.last_time.to_i, expected.last) unless expected.empty?
+      end
+    end
+  end
+
   group 'the module % extension' do
 
     # mostly about 2025-09-26 gh-114
