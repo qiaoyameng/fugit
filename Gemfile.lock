@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    fugit (1.14.0)
+    fugit (1.15.0)
       et-orbi (~> 1.4)
       raabro (~> 1.4)
 

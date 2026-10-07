@@ -159,6 +159,21 @@ group Fugit::Cron do
 
     #[ '0 0 1 jan *', '2026-01-01 00:00', '2025-02-27', 'Europe/Bern' ],
     [ '0 0 1 jan *', '2026-01-01 00:00', '2025-02-27', 'Europe/Zurich' ],
+
+    # nW and LW monthdays
+
+    [ '0 0 15W * *', '2017-01-16 00:00:00' ], # Jan 15 2017 is a Sunday
+    [ '0 0 1W * *', '2017-01-02 00:00:00', '2017-01-01' ], # Jan 1st is a Sunday
+    [ '0 0 LW * *', '2017-01-31 00:00:00' ],
+    [ '0 0 LW 2 *', '2017-02-28 00:00:00', '2017-01-01' ],
+    [ '0 0 29W 2 *', '2020-02-28 00:00:00', '2019-01-01' ],
+      # Feb 29 2020 is a Saturday, and 2019 has no Feb 29
+    [ '0 0 31W 5 *', '2026-05-29 00:00:00', '2026-01-01' ],
+      # May 31 2026 is a Sunday, does not cross into June
+    [ '0 0 1W 8 *', '2026-08-03 00:00:00', '2026-01-01' ],
+      # Aug 1 2026 is a Saturday, does not cross back into July
+    [ '0 0 15W * 5', '2017-01-06 00:00:00' ], # OR with the weekday field
+    [ '0 0 15W& * 5', '2017-04-14 00:00:00' ], # AND with the weekday field
   ]
 
   group '#next_time' do
@@ -816,6 +831,140 @@ group Fugit::Cron do
     end
   end
 
+  group 'nW and LW monthdays' do
+
+    {
+      '0 0 15W * *' => [ [], [ [ :w, 15 ] ] ],
+      '0 0 15w * *' => [ [], [ [ :w, 15 ] ] ],
+      '0 0 LW * *' => [ [], [ :lw ] ],
+      '0 0 lw * *' => [ [], [ :lw ] ],
+      '0 0 1,15W,LW * *' => [ [ 1 ], [ [ :w, 15 ], :lw ] ],
+      '0 0 15W,15W * *' => [ [], [ [ :w, 15 ] ] ],
+
+    }.each do |cron, (monthdays, w)|
+
+      test "parses #{cron.inspect} monthdays to #{(monthdays + w).inspect}" do
+
+        c = Fugit::Cron.parse(cron)
+
+        assert(c.monthdays, monthdays)
+        assert(c.monthday_w, w)
+      end
+    end
+
+    [
+      '0 0 15W * *',
+      '0 0 1,15W,LW * *',
+      '0 0 LW 2 *',
+      '0 0 29W 2 *',
+
+    ].each do |cron|
+
+      test "normalizes #{cron.inspect} to itself" do
+
+        assert(Fugit::Cron.parse(cron).to_cron_s, cron)
+      end
+    end
+
+    [
+      '0 0 0W * *',
+      '0 0 32W * *',
+      '0 0 W * *',
+      '0 0 15W-20 * *',
+      '0 0 15W/2 * *',
+      '0 0 30W 2 *',
+      '0 0 31W 2 *',
+      '0 0 31W 2,4 *',
+
+    ].each do |cron|
+
+      test "returns nil for #{cron.inspect}" do
+
+        assert(Fugit::Cron.parse(cron), nil)
+      end
+    end
+
+    {
+      # each 2026 month, day by day, Sat -> Fri, Sun -> Mon
+      '0 0 15W * *' => %w[
+        2026-01-15 2026-02-16 2026-03-16 2026-04-15
+        2026-05-15 2026-06-15 2026-07-15 2026-08-14
+        2026-09-15 2026-10-15 2026-11-16 2026-12-15 ],
+      # Feb 1st 2026 is a Sunday, Aug 1st 2026 is a Saturday (-> Aug 3rd)
+      '0 0 1W * *' => %w[
+        2026-01-01 2026-02-02 2026-03-02 2026-04-01
+        2026-05-01 2026-06-01 2026-07-01 2026-08-03
+        2026-09-01 2026-10-01 2026-11-02 2026-12-01 ],
+      # Jan 31st 2026 is a Saturday, May 31st 2026 is a Sunday
+      '0 0 LW * *' => %w[
+        2026-01-30 2026-02-27 2026-03-31 2026-04-30
+        2026-05-29 2026-06-30 2026-07-31 2026-08-31
+        2026-09-30 2026-10-30 2026-11-30 2026-12-31 ],
+
+    }.each do |cron, days|
+
+      test "yields the 2026 month sequence for #{cron.inspect}" do
+
+        c = Fugit::Cron.parse(cron)
+
+        ts = c.next(Time.parse('2026-01-01') - 1).take(12)
+
+        assert(ts.collect { |t| t.strftime('%F') }, days)
+        assert(ts.collect { |t| t.wday }.uniq - [ 1, 2, 3, 4, 5 ], [])
+      end
+    end
+
+    test 'does not trigger 29W in a non-leap February' do
+
+      c = Fugit::Cron.parse('0 0 29W 2 *')
+
+      ts = c.next(Time.parse('2026-01-01')).take(2)
+
+      assert(
+        ts.collect { |t| t.strftime('%F') },
+        [ '2028-02-29', '2032-02-27' ]) # 2032-02-29 is a Sunday
+    end
+
+    test 'does not let 31W cross the end of May 2026 (a Sunday)' do
+
+      c = Fugit::Cron.parse('0 0 31W 5 *')
+
+      assert(
+        c.next_time(Time.parse('2026-01-01')).strftime('%F'),
+        '2026-05-29')
+    end
+
+    test 'triggers only once when nW and a plain monthday coincide' do
+
+      c = Fugit::Cron.parse('0 0 15,15W * *')
+
+      assert(
+        c.within('2026-01-01', '2026-02-01').collect { |t| t.strftime('%F') },
+        [ '2026-01-15' ])
+    end
+
+    test 'matches nW and LW days via #match?' do
+
+      assert(Fugit::Cron.parse('0 0 15W * *').match?('2026-08-14 00:00'), true)
+      assert(Fugit::Cron.parse('0 0 15W * *').match?('2026-08-15 00:00'), false)
+      assert(Fugit::Cron.parse('0 0 LW * *').match?('2026-10-30 00:00'), true)
+      assert(Fugit::Cron.parse('0 0 LW * *').match?('2026-10-31 00:00'), false)
+    end
+
+    test 'distinguishes crons with different nW/LW monthdays' do
+
+      assert(
+        Fugit::Cron.parse('0 0 15W * *') == Fugit::Cron.parse('0 0 15W * *'),
+        true)
+      assert(
+        Fugit::Cron.parse('0 0 15W * *') == Fugit::Cron.parse('0 0 16W * *'),
+        false)
+      assert(
+        Fugit::Cron.parse('0 0 15W * *') == Fugit::Cron.parse('0 0 LW * *'),
+        false)
+    end
+  end
+
   PREVIOUS_TIMES = [
 
     [ '5 0 * * *', '2016-12-31 00:05:00', '2017-01-01' ],
@@ -885,6 +1034,15 @@ group Fugit::Cron do
         '2024-03-18 23:20:00', '2024-03-21 12:00', 'Europe/Paris' ],
     [ '0 7 * * 2%2 America/Bogota',
         '2024-03-19 13:00:00', '2024-03-21 12:00', 'Europe/Paris' ],
+
+    # nW and LW monthdays
+
+    [ '0 0 15W * *', '2017-02-15 00:00:00', '2017-03-15' ],
+    [ '0 0 LW * *', '2017-02-28 00:00:00', '2017-03-15' ],
+    [ '0 0 1W * *', '2017-05-01 00:00:00', '2017-05-15' ],
+    [ '0 0 29W 2 *', '2016-02-29 00:00:00', '2017-03-15' ],
+    [ '0 0 31W 10 *', '2026-10-30 00:00:00', '2026-11-15' ],
+      # Oct 31 2026 is a Saturday
   ]
 
   group '#previous_time' do
@@ -1974,4 +2132,3 @@ group Fugit do
     end
   end
 end
-

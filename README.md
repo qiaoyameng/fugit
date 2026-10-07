@@ -208,10 +208,15 @@ Example of cron strings understood by fugit:
 '0 0 last * *'  # idem
 '0 0 -7-L * *'  # from the seventh to last to the last day of month at 00:00
 
+'0 0 15W * *'   # Monday to Friday day nearest to the 15th of the month at 00:00
+'0 0 LW * *'    # last Monday to Friday day of the month at 00:00
+
 # and more...
 ```
 
 Please note that `'15/30 * * * *'` is interpreted as `'15-59/30 * * * *'` since fugit 1.4.6.
+
+The `nW` monthday notation selects the Monday to Friday day nearest to day `n` of the month (Saturday yields the day before, Sunday the day after), without ever crossing the month boundary (a Saturday 1st yields Monday the 3rd, a Sunday last day of month yields the Friday before). If day `n` does not exist in a month (like a 29W in a non-leap February), it simply doesn't trigger that month. `LW` selects the last Monday to Friday day of the month. No holiday rules are applied.
 
 ### time zones
 
@@ -713,4 +718,3 @@ The gem [nice_hash](https://github.com/MarioRuiz/nice_hash) gets in the way of `
 ## LICENSE
 
 MIT, see [LICENSE.txt](LICENSE.txt)
-
