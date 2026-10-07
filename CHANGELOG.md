@@ -2,6 +2,12 @@
 # CHANGELOG.md
 
 
+## fugit 1.15.0
+
+* Add `nW` and `LW` to the cron monthday field, "nearest weekday (Mon-Fri)
+  to the nth" and "last weekday of the month", no holiday rule
+
+
 ## fugit 1.14.0 released 2026-09-14
 
 * Reject input when length > 256
@@ -362,4 +368,3 @@
 ## fugit 0.9.0  released 2017-01-03
 
 * Initial release
-

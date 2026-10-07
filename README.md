@@ -208,8 +208,26 @@ Example of cron strings understood by fugit:
 '0 0 last * *'  # idem
 '0 0 -7-L * *'  # from the seventh to last to the last day of month at 00:00
 
+# "weekday of month", nW and LW, since fugit 1.15.0
+
+'0 0 15W * *'  # 00:00 on the Mon-Fri closest to the 15th
+'0 0 LW * *'   # 00:00 on the last Mon-Fri of the month
+
 # and more...
 ```
+
+`nW` selects the weekday (Monday to Friday, no holiday rule) closest to the
+`n`th of the current month. If the `n`th is a Saturday, fugit goes back to
+Friday; if it is a Sunday, it goes forward to Monday. The landing never crosses
+the month boundary: `1W` on a Saturday yields Monday the 3rd and `nW` at the
+end of a month on a Sunday yields the preceding Friday. If `n` does not exist
+in the month (`31W` in February for example), the month is simply skipped.
+`LW` is short for the last Monday-to-Friday of the month.
+
+`nW` and `LW` may be mixed with plain monthdays in a single field
+(`0 0 1,15W,LW * *`); duplicate landings only trigger once. As with regular
+monthdays, the day-of-month and day-of-week fields are joined by OR by default
+and by explicit AND when the field is suffixed with `&`.
 
 Please note that `'15/30 * * * *'` is interpreted as `'15-59/30 * * * *'` since fugit 1.4.6.
 
@@ -713,4 +731,3 @@ The gem [nice_hash](https://github.com/MarioRuiz/nice_hash) gets in the way of `
 ## LICENSE
 
 MIT, see [LICENSE.txt](LICENSE.txt)
-

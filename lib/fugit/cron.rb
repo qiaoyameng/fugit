@@ -21,6 +21,7 @@ module Fugit
       :original, :zone)
     attr_reader(
       :seconds, :minutes, :hours, :monthdays, :months, :weekdays, :timezone)
+    attr_reader(:monthdays_w)
 
     class << self
 
@@ -87,11 +88,24 @@ module Fugit
         @seconds == [ 0 ] ? nil : (@seconds || [ '*' ]).join(','),
         (@minutes || [ '*' ]).join(','),
         (@hours || [ '*' ]).join(','),
-        (@monthdays || [ '*' ]).join(','),
+        monthdays_to_cron_s,
         (@months || [ '*' ]).join(','),
         weekdays_to_cron_s,
         @timezone ? @timezone.name : nil
           ].compact.join(' ')
+    end
+
+    def monthdays_to_cron_s
+
+      return '*' if @monthdays.nil? && @monthdays_w.nil?
+
+      plain = @monthdays || []
+      ws = @monthdays_w || []
+
+      plain
+        .collect(&:to_s)
+        .concat(ws.collect { |d| d < 0 ? 'LW' : "#{d}W" })
+        .join(',')
     end
 
     class TimeCursor
@@ -213,18 +227,62 @@ module Fugit
 
     def monthday_match?(nt)
 
-      return true if @monthdays.nil?
+      return true if @monthdays.nil? && @monthdays_w.nil?
 
       last = (TimeCursor.new(self, nt).inc_month.time - 24 * 3600).day + 1
 
-      @monthdays
-        .collect { |d| d < 1 ? last + d : d }
-        .include?(nt.day)
+      plain =
+        (@monthdays || [])
+          .collect { |d| d < 1 ? last + d : d }
+
+      (@monthdays_w || [])
+        .collect { |d|
+          if d < 0
+            last_wday(nt.year, nt.month)
+          else
+            nearest_wday(nt.year, nt.month, d)
+          end }
+        .include?(nt.day) ||
+      plain.include?(nt.day)
+    end
+
+    def nearest_wday(year, month, n)
+
+      last_day = ::Date.new(year, month, -1).day
+
+      return nil if n > last_day
+
+      wday = ::Date.new(year, month, n).wday # 0..6, Sun..Sat
+
+      d =
+        if wday == 6
+          n == 1 ? n + 2 : n - 1
+            # Saturday, go back to Friday,
+            # except on the 1st (do not cross the month boundary),
+            # then go forward to Monday the 3rd
+        elsif wday == 0
+          n == last_day ? n - 2 : n + 1
+            # Sunday, go forward to Monday,
+            # except on the last day (do not cross the month boundary),
+            # then go back to Friday the (last - 2)th
+        else; n end
+
+      d
+    end
+
+    def last_wday(year, month)
+
+      last = ::Date.new(year, month, -1)
+      wday = last.wday # 0..6, Sun..Sat
+
+      (wday == 0) ? last.day - 2 : # Sunday, go back to Friday
+      (wday == 6) ? last.day - 1 : # Saturday, go back to Friday
+      last.day
     end
 
     def day_match?(nt)
 
-      if @weekdays && @monthdays
+      if @weekdays && (@monthdays || @monthdays_w)
 
         return weekday_match?(nt) && monthday_match?(nt) \
           if @day_and
@@ -509,47 +567,64 @@ module Fugit
         minutes: @minutes,
         hours: @hours,
         monthdays: @monthdays,
+        monthdays_w: @monthdays_w,
         months: @months,
         weekdays: @weekdays }
     end
 
     def ==(o)
 
-      o.is_a?(::Fugit::Cron) && o.to_a == to_a
+      o.is_a?(::Fugit::Cron) &&
+      o.to_a == to_a &&
+      o.monthdays_w == @monthdays_w
     end
     alias eql? ==
 
     def hash
 
-      to_a.hash
+      [ to_a, @monthdays_w ].hash
     end
 
     protected
 
     def compact_month_days
 
-      return true if @months == nil || @monthdays == nil
+      return true if @months == nil
+      return true if @monthdays == nil && @monthdays_w == nil
 
-      ms, ds =
-        @months.inject([ [], [] ]) { |a, m|
-          @monthdays.each { |d|
-            next if d > MAXDAYS[m]
-            a[0] << m; a[1] << d }
-          a }
+      plain_ds = @monthdays || []
+      w_ds = @monthdays_w || []
+
+      ms = []
+      pds = []
+      wds = []
+
+      @months.each do |m|
+        plain_ds.each { |d|
+          next if d > MAXDAYS[m]
+          ms << m; pds << d }
+        w_ds.each { |d|
+          next if d > 0 && d > MAXDAYS[m]
+          ms << m; wds << d }
+      end
+
       @months = ms.uniq
-      @monthdays = ds.uniq
+      @monthdays = pds.uniq.sort
+      @monthdays = nil if @monthdays.empty?
+      @monthdays_w = wds.uniq.sort
+      @monthdays_w = nil if @monthdays_w.empty?
 
-      @months.any? && @monthdays.any?
+      @months.any? && (@monthdays || @monthdays_w)
     end
 
     def rough_days
 
-      return nil if @weekdays == nil && @monthdays == nil
+      return nil if @weekdays == nil && @monthdays == nil && @monthdays_w == nil
 
       months = (@months || (1..12).to_a)
 
       monthdays = months
-        .product(@monthdays || [])
+        .product((@monthdays || []) + (@monthdays_w || []))
         .collect { |m, d|
           d = 31 + d if d < 0
           (m - 1) * 30 + d } # rough
@@ -710,7 +785,26 @@ module Fugit
     end
 
     def determine_monthdays(arr, opts)
-      (@monthdays = do_determine(:monthdays, arr, 1, 31, opts)) != false
+
+      wds, plain = arr.partition { |v| v.is_a?(Array) && v[0] == :w }
+
+      @monthdays = do_determine(:monthdays, plain, 1, 31, opts)
+
+      return false if @monthdays == false
+
+      @monthdays = nil if @monthdays == []
+      @monthdays_w =
+        if wds.empty?
+          nil
+        else
+          wds
+            .collect { |v| v[1] }
+            .select { |d| d >= 1 || d == -1 }
+            .uniq
+            .sort_by { |d| d < 0 ? 32 : d }
+        end
+
+      true
     end
 
     def determine_months(arr, opts)
@@ -808,6 +902,7 @@ module Fugit
       def mos(i); rex(:mos, i, /[0-5]?\d/); end # min or sec
       def hou(i); rex(:hou, i, /(2[0-4]|[01]?[0-9])/); end
       def dom(i); rex(:dom, i, /(-?(3[01]|[12][0-9]|0?[1-9])|last|l)/i); end
+      def w_dom(i); rex(:w_dom, i, /((3[01]|[12][0-9]|0?[1-9])w|lw|lastw)/i); end
       def mon(i); rex(:mon, i, MONTH_REX); end
       def dow(i); rex(:dow, i, DOW_REX); end
 
@@ -850,7 +945,7 @@ module Fugit
       # ssws: slash or sorws
       def mos_elt(i); alt(:elt, i, :slash, :sorws_mos); end
       def hou_elt(i); alt(:elt, i, :slash, :sorws_hou); end
-      def dom_elt(i); alt(:elt, i, :slash, :sorws_dom); end
+      def dom_elt(i); alt(:elt, i, :w_dom, :slash, :sorws_dom); end
       def mon_elt(i); alt(:elt, i, :slash, :sorws_mon); end
       def dow_elt(i); alt(:elt, i, :slash, :sorws_dow); end
 
@@ -917,6 +1012,14 @@ module Fugit
       end
 
       def rewrite_elt(k, t)
+
+        if k == :dom
+          wt = t.subgather(nil).find { |tt| tt.name == :w_dom }
+          if wt
+            s = wt.string.downcase.sub(/last/, 'l')
+            return [ :w, s[0, 1] == 'l' ? -1 : s.to_i ]
+          end
+        end
 
         at, zt, spt, slt, hat, mot = nil
 

@@ -35,6 +35,24 @@ group Fugit::Cron do
     [ '* * -1 * *', '2017-01-31' ],
     [ '* * L * *', '2017-01-31' ],
 
+    # nW and LW, nearest weekday (Mon-Fri) that does not cross
+    # the month boundary
+
+    [ '* * 15W * *', '2026-02-16', '2026-02-01' ], # 15th is a Sunday -> Mon 16
+    [ '* * 14W * *', '2026-02-13', '2026-02-01' ], # 14th is a Saturday -> Fri 13
+    [ '* * 1W * *', '2026-02-02', '2026-02-01' ],  # 1st Sunday -> Mon 2
+    [ '* * 28W * *', '2026-02-27', '2026-02-01' ], # 28th Saturday -> Fri 27
+    [ '* * LW * *', '2026-02-27', '2026-02-01' ],  # last is Sat 28 -> Fri 27
+    [ '* * 29W * *', '2026-03-30', '2026-02-01' ], # no 29 in Feb, skip
+    [ '* * 31W * *', '2026-03-31', '2026-02-01' ], # skip Feb, 31 Mar is Tuesday
+    [ '* * 1W * *', '2025-02-03', '2025-01-15' ],  # 1st Sat -> Mon 3, no crossing
+    [ '* * LW * *', '2025-08-29', '2025-08-01' ],  # last is Sun 31 -> Fri 29
+    [ '* * 31W * *', '2025-08-29', '2025-08-01' ], # 31st Sunday, clamp back to Fri
+
+    # duplicates in the dom list collapse to a single occurrence
+
+    [ '* * 13,13W * *', '2020-01-13', '2020-01-01' ], # both land on the 13th
+
     [ '* * * * mon#2', '2017-01-09' ],
     [ '* * * * mon#-1', '2017-01-30' ],
     [ '* * * * tue#L', '2017-01-31' ],
@@ -814,6 +832,58 @@ group Fugit::Cron do
         end
       end
     end
+
+    group 'nW / LW' do
+
+      test 'only matches the computed landing day' do
+
+        c = Fugit::Cron.parse('0 0 15W * * UTC')
+
+        assert(c.match?(Time.utc(2026, 2, 16)), true)  # Sunday 15 -> Mon 16
+        assert_not(c.match?(Time.utc(2026, 2, 15)))
+        assert_not(c.match?(Time.utc(2026, 2, 13)))
+
+        c = Fugit::Cron.parse('0 0 LW * * UTC')
+
+        assert(c.match?(Time.utc(2026, 2, 27)), true)  # last Sat -> Fri 27
+        assert_not(c.match?(Time.utc(2026, 2, 28)))
+        assert(c.match?(Time.utc(2025, 8, 29)), true)  # last Sun -> Fri 29
+        assert_not(c.match?(Time.utc(2025, 8, 31)))
+      end
+
+      test 'does not match anything for n absent from the month' do
+
+        c = Fugit::Cron.parse('0 0 29W * * UTC')
+
+        (1..28).each { |d| assert_not(c.match?(Time.utc(2026, 2, d))) }
+      end
+
+      test 'ORs with the weekday field by default' do
+
+        c = Fugit::Cron.parse('0 0 15W * 5 UTC')
+
+        assert(c.match?(Time.utc(2026, 2, 13)), true)  # plain Friday
+        assert(c.match?(Time.utc(2026, 2, 16)), true)  # 15W landing, Monday
+      end
+
+      test 'ANDs with the weekday field when & is used' do
+
+        c = Fugit::Cron.parse('0 0 15W * 5& UTC')
+
+        assert_not(c.match?(Time.utc(2026, 2, 13))) # plain Friday
+        assert_not(c.match?(Time.utc(2026, 2, 16))) # Monday landing
+        assert(c.match?(Time.utc(2025, 8, 15)), true)  # 15W lands on a Fri
+      end
+
+      test 'collapses duplicate landings in a list' do
+
+        c = Fugit::Cron.parse('0 0 13,13W * * UTC')
+
+        assert(c.match?(Time.utc(2020, 1, 13)), true)
+        assert(
+          c.within(Time.utc(2020, 1, 1), Time.utc(2020, 2, 1)).size, 1)
+      end
+    end
   end
 
   PREVIOUS_TIMES = [
@@ -849,6 +919,16 @@ group Fugit::Cron do
 
     [ '0 20 31 oct *', '2019-10-31 20:00', '2019-11-01' ], # gh-51
     [ '0 9 29 feb *', '2016-02-29 09:00', '2019-03-23' ], # gh-18
+
+    # nW and LW
+
+    [ '* * 15W * *', '2026-02-16 23:59:00', '2026-02-28' ], # Sun -> Mon
+    [ '* * 14W * *', '2026-02-13 23:59:00', '2026-02-28' ], # Sat -> Fri
+    [ '* * 1W * *', '2026-02-02 23:59:00', '2026-02-28' ],  # 1st Sun -> Mon 2
+    [ '* * LW * *', '2026-02-27 23:59:00', '2026-03-01' ],  # Sat 28 -> Fri 27
+    [ '* * 29W * *', '2026-01-29 23:59:00', '2026-03-01' ], # Feb skipped
+    [ '* * LW * *', '2025-08-29 23:59:00', '2025-09-01' ],  # Sun 31 -> Fri 29
+    [ '* * 1W * *', '2025-02-03 23:59:00', '2025-02-28' ],  # 1st Sat -> Mon 3
 
     [ '59 6 1-7 * 2', '2020-03-10 06:59:00', '2020-03-15 07:47' ],
       # not '2020-03-03 06:59:00', tuesday 2 matches
@@ -1278,6 +1358,58 @@ group Fugit::Cron do
         ].each { |c, e|
           test("parses #{c}") { assert(Fugit::Cron.parse(c).to_cron_s, e) }
         }
+      end
+
+      group 'weekday monthdays (nW and LW)' do
+
+        [
+          [ '* * 15W * *', '* * 15W * *' ],
+          [ '* * 15w * *', '* * 15W * *' ],
+          [ '* * 1W,2W,31W * *', '* * 1W,2W,31W * *' ],
+          [ '* * LW * *', '* * LW * *' ],
+          [ '* * lw * *', '* * LW * *' ],
+          [ '* * lastw * *', '* * LW * *' ],
+          [ '* * LW,31W,1W * *', '* * 1W,31W,LW * *' ],
+          [ '* * 15W,15W * *', '* * 15W * *' ],
+          [ '* * 1,15W,LW * *', '* * 1,15W,LW * *' ],
+          [ '* * 15W * 5', '* * 15W * 5' ],
+          [ '* * 15W * 5&', '* * 15W * 5&' ],
+          [ '0 0 0 15W * * UTC', '0 0 15W * * UTC' ],
+
+          [ '* * 0W * *', nil ],
+          [ '* * 32W * *', nil ],
+          [ '* * 15W/2 * *', nil ],
+          [ '* * 10-20W * *', nil ],
+          [ '* * 15WW * *', nil ],
+          [ '* * WW * *', nil ],
+        ].each { |c, e|
+          test("parses #{c}") do
+            cr = Fugit::Cron.parse(c)
+            assert(cr ? cr.to_cron_s : cr, e)
+          end
+        }
+
+        test 'stores plain and weekday monthdays separately' do
+
+          c = Fugit::Cron.parse('* * 1,15W,LW * *')
+
+          assert(c.monthdays, [ 1 ])
+          assert(c.monthdays_w, [ 15, -1 ])
+          assert(c.to_h[:monthdays], [ 1 ])
+          assert(c.to_h[:monthdays_w], [ 15, -1 ])
+        end
+
+        test 'drops impossible nW months like plain monthdays' do
+
+          c = Fugit::Cron.parse('* * 31W 2 *')
+
+          assert(c, nil)
+
+          c = Fugit::Cron.parse('* * 30,31W 2,3 *')
+
+          assert([ c.months, c.monthdays, c.monthdays_w ],
+            [ [ 3 ], [ 30 ], [ 31 ] ])
+        end
       end
 
       group 'months' do
@@ -1974,4 +2106,3 @@ group Fugit do
     end
   end
 end
-
