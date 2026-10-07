@@ -2,6 +2,12 @@
 # CHANGELOG.md
 
 
+## fugit 1.15.0 not yet released
+
+* Hashed `H` / `H(a-b)/step` cron fields (second, minute, hour),
+  expanded deterministically from a caller-provided `:hash_key`
+
+
 ## fugit 1.14.0 released 2026-09-14
 
 * Reject input when length > 256
@@ -362,4 +368,3 @@
 ## fugit 0.9.0  released 2017-01-03
 
 * Initial release
-

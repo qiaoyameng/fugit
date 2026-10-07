@@ -592,7 +592,7 @@ module Fugit
       self
     end
 
-    def expand(min, max, opts, r)
+    def expand(key, min, max, opts, r, idx)
 
       sta, edn, sep, sla = r
 
@@ -602,6 +602,9 @@ module Fugit
         # gh-86 and gh-103
 
       return false if sla && sla < 1
+
+      return expand_hashed(key, min, max, sta, edn, sla, opts, idx) \
+        if sep == :hash
 
       if sep == :tilde
         sta = random(min, max, sta, edn, sla, opts)
@@ -618,6 +621,39 @@ module Fugit
       edn = max if edn == nil || edn < 0 && sta > 0
 
       range(min, max, sta, edn, sla)
+    end
+
+    # Expands an H (hashed) element, Jenkins-style.
+    #
+    # The caller must provide a stable job identifier via the :hash_key
+    # option; the same key, expression and field position always expand
+    # to the same value(s), across processes.
+    #
+    # A step, when present, keeps its periodic structure: a hashed offset
+    # within the first step interval is picked, then every step point in
+    # the range is kept.
+    #
+    def expand_hashed(key, min, max, sta, edn, sla, opts, idx)
+
+      hk = opts[:hash_key]
+      return false if hk.nil? || hk.to_s.empty?
+
+      sta = min if sta.nil?
+      edn = max if edn.nil?
+      sta = [ sta, min ].max
+      edn = [ edn, max ].min
+
+      return false if sta > edn # empty range
+
+      h = Zlib.crc32([ hk.to_s, key, idx ].join(':')) # stable across processes
+
+      if sla
+        n = [ sla, edn - sta + 1 ].min
+        sta += h % n
+        (sta..edn).step(sla).to_a
+      else
+        sta + h % (edn - sta + 1)
+      end
     end
 
     def random(min, max, sta, edn, sla, opts)
@@ -685,8 +721,9 @@ module Fugit
       null = false
 
       r = arr
-        .collect { |v|
-          expand(min, max, opts, v) }
+        .each_with_index
+        .collect { |v, vi|
+          expand(key, min, max, opts, v, vi) }
         .flatten(1)
         .collect { |e|
           return false if e == false
@@ -805,6 +842,9 @@ module Fugit
 
       def slash(i); rex(:slash, i, /\/\d\d?/); end
 
+      def htag(i); str(:htag, i, 'H'); end
+      def hrange(i); rex(:hrange, i, /\(\d+-\d+\)/); end
+
       def mos(i); rex(:mos, i, /[0-5]?\d/); end # min or sec
       def hou(i); rex(:hou, i, /(2[0-4]|[01]?[0-9])/); end
       def dom(i); rex(:dom, i, /(-?(3[01]|[12][0-9]|0?[1-9])|last|l)/i); end
@@ -848,8 +888,11 @@ module Fugit
       def sorws_dow(i); seq(nil, i, :sor_dow, :slash, '?'); end
 
       # ssws: slash or sorws
-      def mos_elt(i); alt(:elt, i, :slash, :sorws_mos); end
-      def hou_elt(i); alt(:elt, i, :slash, :sorws_hou); end
+      def h_mos(i); seq(nil, i, :htag, :hrange, '?', :slash, '?'); end
+      def h_hou(i); seq(nil, i, :htag, :hrange, '?', :slash, '?'); end
+
+      def mos_elt(i); alt(:elt, i, :h_mos, :slash, :sorws_mos); end
+      def hou_elt(i); alt(:elt, i, :h_hou, :slash, :sorws_hou); end
       def dom_elt(i); alt(:elt, i, :slash, :sorws_dom); end
       def mon_elt(i); alt(:elt, i, :slash, :sorws_mon); end
       def dow_elt(i); alt(:elt, i, :slash, :sorws_dow); end
@@ -918,13 +961,15 @@ module Fugit
 
       def rewrite_elt(k, t)
 
-        at, zt, spt, slt, hat, mot = nil
+        at, zt, spt, slt, hat, mot, htt, hrt = nil
 
         t.subgather(nil).each do |tt|
           case tt.name
           when :slash then slt = tt
           when :hash then hat = tt
           when :mod then mot = tt
+          when :htag then htt = tt
+          when :hrange then hrt = tt
           when :hyphen then spt = tt
           when :tilde then spt = tt
           else if spt; zt ||= tt; else; at = tt; end
@@ -932,6 +977,11 @@ module Fugit
         end
 
         sl = slt ? slt.string[1..-1].to_i : nil
+
+        if htt
+          a, z = hrt ? hrt.string[1..-2].split('-').collect(&:to_i) : []
+          return [ a, z, :hash, sl, nil, nil ]
+        end
 
         ha = hat ? hat.string[1..-1] : nil
         ha = -1 if ha && ha.upcase[0, 1] == 'L'
@@ -985,4 +1035,3 @@ module Fugit
     end
   end
 end
-

@@ -509,6 +509,30 @@ Fugit.parse('~ * * * *', random: SecureRandom) # on a cryptographically secure r
 Please note that the random values are determined at parse time. So `"~29 * * * *"` at parse time could become `"17 * * * *"` for example and go on triggering every hour at minute 17, until a new parsing occurs and another (or the same) minute is picked. This aligns with the OpenBSD [`man 5 crontab`](https://man.openbsd.org/crontab.5), OpenBSD `crond` rolling the dice at load time.
 
 
+### the hashed H extension
+
+Fugit accepts the `H` character (à la Jenkins) in the second, minute and hour fields to spread the load of many schedules sharing the same expression. The value is derived from a stable job identifier that the caller must provide via the `:hash_key` option, so the same identifier, expression and field position always expand to the same value, across Ruby processes.
+
+```ruby
+Fugit.parse_cron('H * * * *', hash_key: 'job-a')
+  # every hour on a minute derived from 'job-a', for example '4 * * * *'
+Fugit.parse_cron('H(0-29) * * * *', hash_key: 'job-a')
+  # every hour on a hashed minute between 0 and 29
+Fugit.parse_cron('H/15 * * * *', hash_key: 'job-a')
+  # every 15 minutes, starting on a hashed minute between 0 and 14,
+  # for example '4,19,34,49 * * * *'
+Fugit.parse_cron('H(10-50)/10 * * * *', hash_key: 'job-a')
+  # every 10 minutes between 10 and 50, starting on a hashed offset,
+  # for example '14,24,34,44 * * * *'
+```
+
+When a step is given, its periodic structure is preserved: a hashed offset within the first step interval is picked, then every step point in the range is kept. The second, minute and hour fields are hashed separately.
+
+`H` is rejected in the day-of-month, month and day-of-week fields, as are empty ranges like `H(5-3)`. Parsing an `H` expression without a `:hash_key` returns `nil` (`Fugit::Cron.parse`) or raises an `ArgumentError` (`Fugit::Cron.do_parse`).
+
+The original string is kept in `Fugit::Cron#original`, while `Fugit::Cron#to_cron_s` renders the concrete, expanded expression.
+
+
 ### the second extension
 
 Fugit accepts cron strings with five elements, `minute hour day-of-month month day-of-week`, the standard cron format or six elements `second minute hour day-of-month month day-of-week`.
@@ -713,4 +737,3 @@ The gem [nice_hash](https://github.com/MarioRuiz/nice_hash) gets in the way of `
 ## LICENSE
 
 MIT, see [LICENSE.txt](LICENSE.txt)
-

@@ -8,6 +8,7 @@ end
 
 require 'time'
 require 'stringio'
+require 'zlib'
 
 require 'raabro'
 require 'et-orbi'
@@ -18,4 +19,3 @@ require 'fugit/duration'
 require 'fugit/nat'
 require 'fugit/at'
 require 'fugit/parse'
-

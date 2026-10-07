@@ -1931,6 +1931,188 @@ group Fugit::Cron do
         '2026-03-25 Wed 377 +7' ])
     end
   end
+
+  group 'the hashed H extension' do
+
+    group '.parse' do
+
+      [
+
+        [ 'H * * * *', 'job-a', '4 * * * *' ],
+        [ 'H H * * *', 'job-a', '4 17 * * *' ],
+        [ 'H(0-29) * * * *', 'job-a', '4 * * * *' ],
+        [ 'H(0-59) * * * *', 'job-a', '4 * * * *' ],
+        [ 'H/15 * * * *', 'job-a', '4,19,34,49 * * * *' ],
+        [ 'H(10-50)/10 * * * *', 'job-a', '14,24,34,44 * * * *' ],
+        [ 'H(0-29)/7 0 * * *', 'job-a', '1,8,15,22,29 0 * * *' ],
+        [ 'H H H * * *', 'job-b', '42 13 12 * * *' ],
+        [ 'H H * * *', 'job-c', '57 23 * * *' ],
+
+      ].each do |c, k, e|
+
+        test "expands #{c.inspect} with key #{k.inspect} to #{e.inspect}" do
+
+          cron = Fugit::Cron.parse(c, hash_key: k)
+
+          assert(cron.to_cron_s, e)
+          assert(cron.original, c)
+        end
+      end
+
+      test 'expands to the same values in a distinct Ruby process' do
+
+        vectors = [
+          [ 'H * * * *', 'job-a' ],
+          [ 'H H * * *', 'job-a' ],
+          [ 'H/15 * * * *', 'job-a' ],
+          [ 'H(10-50)/10 * * * *', 'job-a' ],
+          [ 'H H H * * *', 'job-b' ],
+          [ 'H(0-29)/7 0 * * *', 'job-a' ] ]
+
+        lib = File.expand_path('../lib', __dir__)
+
+        File.write('tmp_hashed_vectors.rb',
+          "require 'fugit'\n" +
+          vectors
+            .collect { |c, k|
+              "puts Fugit::Cron.parse(#{c.inspect}, hash_key: #{k.inspect})" +
+              ".to_cron_s" }
+            .join("\n"))
+
+        out = nil
+
+        begin
+          out = `#{Gem.ruby} -I#{lib} tmp_hashed_vectors.rb`
+        ensure
+          File.delete('tmp_hashed_vectors.rb')
+        end
+
+        assert($?.success?, true)
+        assert(out.lines.collect(&:chomp),
+          vectors.collect { |c, k|
+            Fugit::Cron.parse(c, hash_key: k).to_cron_s })
+      end
+
+      test 'keeps the periodic structure when a step is given' do
+
+        %w[ key-a key-b key-c key-d ].each do |k|
+
+          mins = Fugit::Cron.parse('H(10-50)/10 * * * *', hash_key: k).minutes
+
+          assert(mins.each_cons(2).collect { |a, b| b - a }.uniq, [ 10 ])
+          assert(mins.first < 20, true)
+          assert(mins.all? { |m| (10..50).include?(m) }, true)
+        end
+      end
+
+      test 'hashes seconds, minutes and hours separately' do
+
+        cron = Fugit::Cron.parse('H H H * * *', hash_key: 'job-b')
+
+        assert(cron.seconds, [ 42 ])
+        assert(cron.minutes, [ 13 ])
+        assert(cron.hours, [ 12 ])
+      end
+    end
+
+    group 'failures' do
+
+      [
+
+        'H * * * *',          # no :hash_key given
+        'H/15 * * * *',       #
+        'H(0-29) * * * *',    #
+
+      ].each do |c|
+
+        test "returns nil for #{c.inspect} without a :hash_key" do
+
+          assert(Fugit::Cron.parse(c), nil)
+          assert(Fugit::Cron.parse(c, hash_key: nil), nil)
+          assert(Fugit::Cron.parse(c, hash_key: ''), nil)
+        end
+      end
+
+      test 'raises ArgumentError when parsing strictly without a :hash_key' do
+
+        assert_error(
+          lambda { Fugit::Cron.do_parse('H * * * *') },
+          ArgumentError, 'invalid cron string "H * * * *"')
+      end
+
+      [
+
+        '0 0 H 1 *',     # day of month
+        '0 0 0 H *',     # month
+        '0 0 0 * H',     # day of week
+        '0 0 0 * H/2',   #
+        '0 0 0 * H(1-5)', #
+
+      ].each do |c|
+
+        test "rejects H in an unsupported position for #{c.inspect}" do
+
+          assert(Fugit::Cron.parse(c, hash_key: 'job-a'), nil)
+        end
+      end
+
+      [
+
+        'H(5-3) * * * *',
+        'H(30-29) * * * *',
+        'H(55-58)/0 * * * *',
+        'H(70-80) * * * *',
+
+      ].each do |c|
+
+        test "rejects the empty or invalid range in #{c.inspect}" do
+
+          assert(Fugit::Cron.parse(c, hash_key: 'job-a'), nil)
+        end
+      end
+    end
+
+    group 'scheduling' do
+
+      test 'next_time, previous_time and match? agree with the concrete cron' do
+
+        in_zone('UTC') do
+
+          cron = Fugit::Cron.do_parse('H(0-29)/7 0 * * *', hash_key: 'job-a')
+          concrete = Fugit::Cron.do_parse(cron.to_cron_s)
+
+          assert(cron.to_cron_s, '1,8,15,22,29 0 * * *')
+          assert(cron.original, 'H(0-29)/7 0 * * *')
+
+          from = Time.utc(2026, 10, 7, 12, 0, 0)
+
+          nt = cron.next_time(from)
+          pt = cron.previous_time(from)
+
+          assert(nt.strftime('%F %T'), '2026-10-08 00:01:00')
+          assert(pt.strftime('%F %T'), '2026-10-07 00:29:00')
+
+          assert(cron.match?(nt), true)
+          assert(cron.match?(pt), true)
+
+          assert(concrete.next_time(from), nt)
+          assert(concrete.previous_time(from), pt)
+        end
+      end
+
+      test 'match? accepts the hashed points and rejects the others' do
+
+        cron = Fugit::Cron.do_parse('H/15 * * * *', hash_key: 'job-a')
+          # 4,19,34,49 * * * *
+
+        assert(cron.match?('2026-10-07 12:04:00'), true)
+        assert(cron.match?('2026-10-07 12:19:00'), true)
+        assert(cron.match?('2026-10-07 12:34:00'), true)
+        assert(cron.match?('2026-10-07 12:49:00'), true)
+        assert(cron.match?('2026-10-07 12:05:00'), false)
+      end
+    end
+  end
 end
 
 group Fugit do
@@ -1974,4 +2156,3 @@ group Fugit do
     end
   end
 end
-
